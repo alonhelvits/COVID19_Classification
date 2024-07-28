@@ -134,7 +134,7 @@ def get_oversampled_dataset(train_df, config):
     return oversampled_trainset, valset
 
 
-def get_datasets(config, train_df, test_df):
+def get_datasets(config, train_df, test_df, test_trans=False):
     #transformation = get_transform(config['transformation_type'])
     if config['dataset_balance'] == 'oversampled':
         train_dataset, val_dataset = get_oversampled_dataset(train_df, config)# transformation)
@@ -147,8 +147,10 @@ def get_datasets(config, train_df, test_df):
         train_dataset, val_dataset = get_undersampled_dataset(train_df, config)#transformation)
     else:
         raise ValueError(f"Unknown dataset balance mode: {config['dataset_balance']}")
-    
-    test_dataset = ChestXRayDataset(dataframe=test_df, transform=get_transform('test_transforms_256'))
+    if test_trans:
+     test_dataset = ChestXRayDataset(dataframe=test_df, transform=test_trans)
+    else:
+     test_dataset = ChestXRayDataset(dataframe=test_df, transform=get_transform('test_transforms_256'))
     # Create DataLoader instances
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=0)
