@@ -134,7 +134,7 @@ def get_oversampled_dataset(train_df, config):
     return oversampled_trainset, valset
 
 
-def get_datasets(config, train_df, test_df, test_trans=False):
+def get_datasets(config, train_df, test_df, test_trans=None):
     #transformation = get_transform(config['transformation_type'])
     if config['dataset_balance'] == 'oversampled':
         train_dataset, val_dataset = get_oversampled_dataset(train_df, config)# transformation)
@@ -147,10 +147,11 @@ def get_datasets(config, train_df, test_df, test_trans=False):
         train_dataset, val_dataset = get_undersampled_dataset(train_df, config)#transformation)
     else:
         raise ValueError(f"Unknown dataset balance mode: {config['dataset_balance']}")
-    if test_trans:
-     test_dataset = ChestXRayDataset(dataframe=test_df, transform=test_trans)
+    
+    if test_trans is None:
+        test_dataset = ChestXRayDataset(dataframe=test_df, transform=get_transform('test_transforms_256'))
     else:
-     test_dataset = ChestXRayDataset(dataframe=test_df, transform=get_transform('test_transforms_256'))
+        test_dataset = ChestXRayDataset(dataframe=test_df, transform=test_trans)
     # Create DataLoader instances
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=0)
@@ -186,7 +187,7 @@ def make(config, device='cpu', train_loader=None):
         criterion = nn.CrossEntropyLoss()
 
     # Define optimizer
-    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'], weight_decay=config['weight_decay'])
 
     return model, criterion, optimizer
 
@@ -482,6 +483,73 @@ def evaluate_model(model, test_loader, device):
     plt.show()
 
 
+def evaluate_model_with_tta(model, test_loader_1, test_loader_2, test_loader_3, device='cpu'):
+    model.eval()  # Set the model to evaluation mode
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():  # Disable gradient computation
+        for batch_1, batch_2, batch_3 in zip(test_loader_1, test_loader_2, test_loader_3):
+            inputs_1, labels_1 = batch_1
+            inputs_2, labels_2 = batch_2
+            inputs_3, labels_3 = batch_3
+
+            # Move inputs and labels to the appropriate device
+            inputs_1, labels_1 = inputs_1.to(device), labels_1.to(device)
+            inputs_2, labels_2 = inputs_2.to(device), labels_2.to(device)
+            inputs_3, labels_3 = inputs_3.to(device), labels_3.to(device)
+
+            # Get model outputs for each transformed batch
+            outputs_1 = model(inputs_1)
+            outputs_2 = model(inputs_2)
+            outputs_3 = model(inputs_3)
+
+            # Average the outputs
+            avg_outputs = (outputs_1 + outputs_2 + outputs_3) / 3
+
+            # Get predictions
+            _, preds = torch.max(avg_outputs, 1)
+
+            # Store predictions and labels
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels_1.cpu().numpy())  # Assuming all labels are the same
+    
+        # Calculate per-class accuracy (EPR-Class Accuracy)
+    epr_class_accuracy = []
+    for cls in range(3):  # Assuming 3 classes: NORMAL, BACTERIA, COVID
+        cls_indices = np.where(np.array(all_labels) == cls)[0]
+        cls_preds = np.array(all_preds)[cls_indices]
+        cls_labels = np.array(all_labels)[cls_indices]
+        cls_accuracy = accuracy_score(cls_labels, cls_preds)
+        epr_class_accuracy.append(cls_accuracy)
+    
+    # Calculate overall performance metrics
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average='weighted')
+    recall = recall_score(all_labels, all_preds, average='weighted')
+    f1 = f1_score(all_labels, all_preds, average='weighted')
+    cm = confusion_matrix(all_labels, all_preds)
+
+    # Print performance metrics
+    print(f'Accuracy: {accuracy:.4f}')
+    print(f'Precision: {precision:.4f}')
+    print(f'Recall: {recall:.4f}')
+    print(f'F1 Score: {f1:.4f}')
+    print('EPR-Class Accuracy:')
+    for cls, acc in enumerate(epr_class_accuracy):
+        print(f'Class {cls}: {acc:.4f}')
+
+    # Plot confusion matrix
+    plt.figure(figsize=(10, 7))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['NORMAL', 'BACTERIA', 'COVID'], 
+                yticklabels=['NORMAL', 'BACTERIA', 'COVID'])
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.title('Confusion Matrix')
+    plt.show()
+
+    
 def plot_tsne(model, config, train_df, test_df, device):
     """
     Extracts features from the input of fc3, performs t-SNE, and plots the result.
